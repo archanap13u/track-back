@@ -8,16 +8,15 @@ from database import db, Employee, WorkSession, ActivityLog, Admin
 
 app = Flask(__name__)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
-    'DATABASE_URL', 
-    'postgresql://tracker_user:password@localhost:5432/activity_tracker'
-)
+# Configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-this')
 
 CORS(app)
 db.init_app(app)
 
+# JWT Authentication Decorator
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -37,8 +36,13 @@ def token_required(f):
         return f(current_user, *args, **kwargs)
     return decorated
 
+# ===================================
+# AUTHENTICATION ENDPOINTS
+# ===================================
+
 @app.route('/api/auth/login', methods=['POST'])
 def login():
+    """Admin login endpoint"""
     data = request.json
     admin = Admin.query.filter_by(username=data.get('username')).first()
     
@@ -60,9 +64,14 @@ def login():
     
     return jsonify({'error': 'Invalid credentials'}), 401
 
+# ===================================
+# EMPLOYEE ENDPOINTS
+# ===================================
+
 @app.route('/api/employees', methods=['GET'])
 @token_required
 def get_employees(current_user):
+    """Get all employees"""
     employees = Employee.query.all()
     return jsonify({
         'employees': [{
@@ -81,14 +90,17 @@ def get_employees(current_user):
 @app.route('/api/employees/<int:emp_id>/activity', methods=['GET'])
 @token_required
 def get_employee_activity(current_user, emp_id):
+    """Get activity for specific employee"""
     date_param = request.args.get('date', date.today().isoformat())
     target_date = datetime.strptime(date_param, '%Y-%m-%d').date()
     
+    # Get work session
     session = WorkSession.query.filter_by(
         employee_id=emp_id,
         date=target_date
     ).first()
     
+    # Get activities
     activities = ActivityLog.query.filter(
         ActivityLog.employee_id == emp_id,
         db.func.date(ActivityLog.timestamp) == target_date
@@ -113,8 +125,13 @@ def get_employee_activity(current_user, emp_id):
         } for a in activities]
     })
 
+# ===================================
+# CLIENT AGENT ENDPOINTS
+# ===================================
+
 @app.route('/api/agent/register', methods=['POST'])
 def register_agent():
+    """Register employee PC agent"""
     data = request.json
     
     employee = Employee.query.filter_by(
@@ -138,6 +155,7 @@ def register_agent():
 
 @app.route('/api/agent/heartbeat', methods=['POST'])
 def agent_heartbeat():
+    """Receive heartbeat from client agent"""
     data = request.json
     
     employee = Employee.query.filter_by(
@@ -147,9 +165,11 @@ def agent_heartbeat():
     if not employee:
         return jsonify({'error': 'Employee not registered'}), 404
     
+    # Update employee status
     employee.status = data.get('status', 'active')
     employee.last_activity = datetime.utcnow()
     
+    # Create or update work session
     today = date.today()
     session = WorkSession.query.filter_by(
         employee_id=employee.id,
@@ -164,10 +184,12 @@ def agent_heartbeat():
         )
         db.session.add(session)
     
+    # Update session times
     session.total_active_time = data.get('active_time', 0)
     session.total_idle_time = data.get('idle_time', 0)
     session.productivity_score = data.get('productivity_score', 0)
     
+    # Log activity
     if data.get('current_app'):
         activity = ActivityLog(
             employee_id=employee.id,
@@ -185,6 +207,7 @@ def agent_heartbeat():
 
 @app.route('/api/agent/activity', methods=['POST'])
 def log_activity():
+    """Log detailed activity from agent"""
     data = request.json
     
     employee = Employee.query.filter_by(
@@ -194,6 +217,7 @@ def log_activity():
     if not employee:
         return jsonify({'error': 'Employee not registered'}), 404
     
+    # Log application usage
     if data.get('applications'):
         for app_data in data.get('applications'):
             activity = ActivityLog(
@@ -206,6 +230,7 @@ def log_activity():
             )
             db.session.add(activity)
     
+    # Log website visits
     if data.get('websites'):
         for web_data in data.get('websites'):
             activity = ActivityLog(
@@ -221,11 +246,17 @@ def log_activity():
     
     return jsonify({'success': True})
 
+# ===================================
+# ANALYTICS ENDPOINTS
+# ===================================
+
 @app.route('/api/analytics/productivity', methods=['GET'])
 @token_required
 def get_productivity_analytics(current_user):
+    """Get productivity analytics"""
     today = date.today()
     
+    # Get today's sessions
     sessions = WorkSession.query.filter_by(date=today).all()
     
     active_employees = len([s for s in sessions if s.employee.status == 'active'])
@@ -245,8 +276,10 @@ def get_productivity_analytics(current_user):
 @app.route('/api/analytics/applications', methods=['GET'])
 @token_required
 def get_application_analytics(current_user):
+    """Get application usage analytics"""
     today = date.today()
     
+    # Get app usage for today
     apps = db.session.query(
         ActivityLog.application_name,
         db.func.sum(ActivityLog.duration).label('total_time'),
@@ -266,19 +299,25 @@ def get_application_analytics(current_user):
         'category': app.category
     } for app in apps])
 
+# ===================================
+# DATABASE INITIALIZATION
+# ===================================
+
 @app.cli.command()
 def init_db():
+    """Initialize the database"""
     db.create_all()
     print("✅ Database initialized successfully!")
 
 @app.cli.command()
 def create_admin():
+    """Create admin user"""
     admin = Admin(
         username='admin',
         email='admin@company.com',
         role='admin'
     )
-    admin.set_password('admin123')
+    admin.set_password('admin123')  # CHANGE THIS IN PRODUCTION!
     db.session.add(admin)
     db.session.commit()
     print("✅ Admin user created!")
@@ -288,6 +327,8 @@ def create_admin():
 
 @app.cli.command()
 def seed_data():
+    """Seed sample data for testing"""
+    # Create sample employees
     employees_data = [
         {'employee_id': 'EMP001', 'name': 'Sarah Johnson', 'email': 'sarah@company.com', 'department': 'Engineering', 'role': 'Senior Developer'},
         {'employee_id': 'EMP002', 'name': 'Michael Chen', 'email': 'michael@company.com', 'department': 'Product', 'role': 'Product Manager'},
@@ -302,9 +343,3 @@ def seed_data():
     
     db.session.commit()
     print("✅ Sample data created!")
-
-from waitress import serve
-
-if __name__ == "__main__":
-    serve(app, host="0.0.0.0", port=5000)
-    
